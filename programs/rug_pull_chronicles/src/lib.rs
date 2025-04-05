@@ -1,20 +1,20 @@
 use anchor_lang::prelude::*;
-use anchor_lang::system_program::System;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
-use mpl_token_metadata::ID as TOKEN_METADATA_PROGRAM_ID;
-// use mpl_token_metadata::instruction::create_metadata_accounts_v3;
-use mpl_token_metadata::instructions::CreateMetadataAccountV3;
+use borsh::BorshSerialize;
+use mpl_core::accounts::BaseAssetV1;
+use mpl_core::ID as MPL_CORE_PROGRAM_ID;
+use mpl_core::{Asset, DataBlob};
+use mpl_core::{ExternalPluginAdaptersList, PluginsList};
 
-
-// pub const RUG_PULL_CHRONICLES_V1_PROGRAM_ID: &str = "3tdk2JLvsyQo3SQUTwDgozdA34SQjWhSVebaMbrHLsN4";
 declare_id!("3tdk2JLvsyQo3SQUTwDgozdA34SQjWhSVebaMbrHLsN4");
 
 #[program]
 pub mod rug_pull_chronicles {
     use super::*;
 
-    pub fn mint_rug(ctx: Context<Initialize>) -> Result<()> {
+    pub fn mint_rug(ctx: Context<MintRug>) -> Result<()> {
+        // Mint 1 token to user
         token::mint_to(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -26,36 +26,47 @@ pub mod rug_pull_chronicles {
             ),
             1,
         )?;
-        // Create Metadata
-        let cpi_accounts = mpl_token_metadata::accounts::create_metadata_accounts_v3 {
-            metadata: ctx.accounts.metadata.to_account_info(),
-            mint: ctx.accounts.mint.to_account_info(),
-            mint_authority: ctx.accounts.authority.to_account_info(),
-            payer: ctx.accounts.authority.to_account_info(),
-            update_authority: ctx.accounts.authority.to_account_info(),
+
+        // Create the asset
+        let asset = Asset {
+            base: BaseAssetV1 {
+                key: mpl_core::types::Key::AssetV1,
+                owner: ctx.accounts.authority.key(),
+                update_authority: mpl_core::types::UpdateAuthority::None,
+                name: "Rug Pull Chronicles #1".to_string(),
+                uri: "https://your-uploaded-image-url.json".to_string(),
+                seq: Some(1),
+            },
+            plugin_list: PluginsList::default(),
+            external_plugin_adapter_list: ExternalPluginAdaptersList::default(),
+            plugin_header: None,
         };
-        let cpi_program = ctx.accounts.token_metadata_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
 
-        let creators = vec![mpl_token_metadata::types::Creator {
-            address: ctx.accounts.authority.key(),
-            verified: false,
-            share: 100,
-        }];
+        // Serialize the asset data
+        let mut data = vec![];
+        borsh::to_writer(&mut data, &asset)?;
 
-        mpl_token_metadata::instructions::create_metadata_accounts_v3(
-            cpi_ctx,
-            "Rug Pull Chronicles #1".to_string(),
-            "RUG".to_string(),
-            "https://devnet.irys.xyz/4NprvLvVgEUBWd8aiYA9MguvLd3Cc9RdbhQUZii32erj".to_string(),
-            Some(creators),
-            100,
-            true,
-            true,
-            None,
-            None,
-            None,
+        // Create the asset account
+        let create_asset_ix = anchor_lang::solana_program::system_instruction::create_account(
+            &ctx.accounts.authority.key(),
+            &ctx.accounts.asset.key(),
+            Rent::get()?.minimum_balance(data.len()),
+            data.len() as u64,
+            &MPL_CORE_PROGRAM_ID,
+        );
+
+        anchor_lang::solana_program::program::invoke_signed(
+            &create_asset_ix,
+            &[
+                ctx.accounts.authority.to_account_info(),
+                ctx.accounts.asset.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            &[],
         )?;
+
+        // Write the asset data
+        ctx.accounts.asset.data.borrow_mut().copy_from_slice(&data);
 
         Ok(())
     }
@@ -70,7 +81,7 @@ pub struct MintRug<'info> {
         init,
         payer = authority,
         mint::decimals = 0,
-        mint::authority = authority
+        mint::authority = authority,
     )]
     pub mint: Account<'info, Mint>,
 
@@ -78,14 +89,13 @@ pub struct MintRug<'info> {
         init,
         payer = authority,
         associated_token::mint = mint,
-        associated_token::authority = authority
+        associated_token::authority = authority,
     )]
     pub token_account: Account<'info, TokenAccount>,
 
-    pub metadata: UncheckedAccount<'info>,
-
-    #[account(address = TOKEN_METADATA_PROGRAM_ID)]
-    pub token_metadata_program: UncheckedAccount<'info>,
+    /// CHECK: We create and validate the asset account in the instruction
+    #[account(mut)]
+    pub asset: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
